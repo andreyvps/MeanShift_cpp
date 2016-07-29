@@ -4,8 +4,6 @@
 
 using namespace std;
 
-#define EPSILON 0.0000001
-
 double euclidean_distance(const vector<double> &point_a, const vector<double> &point_b){
     double total = 0;
     for(int i=0; i<point_a.size(); i++){
@@ -27,15 +25,62 @@ void MeanShift::set_kernel( double (*_kernel_func)(double,double) ) {
     }
 }
 
-vector<double> MeanShift::shift_point(const vector<double> &point, const vector<vector<double> > &points, double kernel_bandwidth) {
-    vector<double> shifted_point = point;
-    for(int dim = 0; dim<shifted_point.size(); dim++){
-        shifted_point[dim] = 0;
+vector<Cluster> MeanShift::cluster(
+    const vector<vector<double> > & points,
+    const double & kernel_bandwidth,
+    const vector<vector<double> > & probes)
+{
+    vector<vector<double>> mutable_probes = probes;
+    meanshift(points, kernel_bandwidth, mutable_probes);
+    vector<vector<double>> modes = find_modes(mutable_probes);
+    return cluster(points, modes);
+}
+
+void MeanShift::meanshift(
+    const std::vector<std::vector<double> > & points,
+    const double & kernel_bandwidth,
+    std::vector<std::vector<double> > & probes) 
+{
+    vector<bool> stop_moving(probes.size(), false);
+    double max_shift_distance;
+    do {
+        max_shift_distance = shift_probes(points, kernel_bandwidth, probes, stop_moving);
+        printf("max_shift_distance: %f\n", max_shift_distance);
+    } while (max_shift_distance > epsilon);
+}
+
+// Shift the probes to their local modes
+double MeanShift::shift_probes(
+    const std::vector<std::vector<double> > & points,
+    const double & kernel_bandwidth,
+    std::vector<std::vector<double> > & probes,
+    vector<bool> & stop_moving)
+{
+    double max_shift_distance = 0;
+    for (int i = 0; i<probes.size(); i++){
+        if (!stop_moving[i]) {
+            double shift_distance = shift_probe(points, kernel_bandwidth, probes[i]);
+            if (shift_distance > max_shift_distance){
+                max_shift_distance = shift_distance;
+            }
+            if (shift_distance <= epsilon) {
+                stop_moving[i] = true;
+            }
+        }
     }
+    return max_shift_distance;
+}
+
+double MeanShift::shift_probe(
+    const std::vector<std::vector<double> > & points,
+    const double & kernel_bandwidth,
+    std::vector<double> & probe)
+{
+    vector<double> shifted_point(probe.size(), 0);
     double total_weight = 0;
     for(int i=0; i<points.size(); i++){
         vector<double> temp_point = points[i];
-        double distance = euclidean_distance(point, temp_point);
+        double distance = euclidean_distance(probe, temp_point);
         double weight = kernel_func(distance, kernel_bandwidth);
         for(int j=0; j<shifted_point.size(); j++){
             shifted_point[j] += temp_point[j] * weight;
@@ -46,61 +91,61 @@ vector<double> MeanShift::shift_point(const vector<double> &point, const vector<
     for(int i=0; i<shifted_point.size(); i++){
         shifted_point[i] /= total_weight;
     }
-    return shifted_point;
+
+    double distance = euclidean_distance(probe, shifted_point);
+    for (int i = 0; i < shifted_point.size(); i++) {
+        probe[i] = shifted_point[i];
+    }
+
+    return distance;
 }
 
-vector<vector<double> > MeanShift::meanshift(const vector<vector<double> > & points, double kernel_bandwidth){
-    vector<bool> stop_moving(points.size(), false);
-    vector<vector<double> > shifted_points = points;
-    double max_shift_distance;
-    do {
-        max_shift_distance = 0;
-        for(int i=0; i<shifted_points.size(); i++){
-            if (!stop_moving[i]) {
-                vector<double>point_new = shift_point(shifted_points[i], points, kernel_bandwidth);
-                double shift_distance = euclidean_distance(point_new, shifted_points[i]);
-                if(shift_distance > max_shift_distance){
-                    max_shift_distance = shift_distance;
-                }
-                if(shift_distance <= EPSILON) {
-                    stop_moving[i] = true;
-                }
-                shifted_points[i] = point_new;
-            }
-        }
-        printf("max_shift_distance: %f\n", max_shift_distance);
-    } while (max_shift_distance > EPSILON);
-    return shifted_points;
-}
-
-vector<Cluster> MeanShift::cluster(
-    const vector<vector<double> > & points, 
-    const vector<vector<double> > & shifted_points)
+std::vector<vector<double> > MeanShift::find_modes(
+    const std::vector<std::vector<double> > & converged_probes)
 {
-    vector<Cluster> clusters;
+    std::vector<vector<double> > modes;
 
-    for (int i = 0; i < shifted_points.size(); i++) {
+    for (int i = 0; i < converged_probes.size(); i++) {
+        vector<double> probe = converged_probes[i];
 
-        int c = 0;
-        for (; c < clusters.size(); c++) {
-            if (euclidean_distance(shifted_points[i], clusters[c].mode) <= EPSILON) {
+        int m = 0;
+        for (; m < modes.size(); m++) {
+            if (euclidean_distance(modes[m], probe) < 2 * epsilon) {
                 break;
             }
         }
 
-        if (c == clusters.size()) {
-            Cluster clus;
-            clus.mode = shifted_points[i];
-            clusters.push_back(clus);
+        if (m == modes.size()) {
+            modes.push_back(probe);
+        }
+    }
+
+    return modes;
+}
+
+vector<Cluster> MeanShift::cluster(
+    const vector<vector<double> > & points,
+    const vector<vector<double> > & modes)
+{
+    vector<Cluster> clusters(modes.size());
+    for (int m = 0; m < modes.size(); m++) {
+        clusters[m].mode = modes[m];
+    }
+
+    for (int i = 0; i < points.size(); i++) {
+
+        int closest_mode_index = 0;
+        double distance_to_closest_mode = euclidean_distance(points[i], modes[0]);
+        for (int c = 1; c < clusters.size(); c++) {
+            double distance = euclidean_distance(points[i], modes[c]);
+            if (distance < distance_to_closest_mode) {
+                distance_to_closest_mode = distance;
+                closest_mode_index = c;
+            }
         }
 
-        clusters[c].support.push_back(points[i]);
+        clusters[closest_mode_index].support.push_back(points[i]);
     }
 
     return clusters;
-}
-
-vector<Cluster> MeanShift::cluster(const vector<vector<double> > & points, double kernel_bandwidth){
-    vector<vector<double> > shifted_points = meanshift(points, kernel_bandwidth);
-    return cluster(points, shifted_points);
 }
